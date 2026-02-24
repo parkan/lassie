@@ -48,7 +48,13 @@ func (r *ExtractingCarReader) ReadAndExtract(ctx context.Context, rdr io.Reader)
 			break
 		}
 		if err != nil {
-			return blockCount, byteCount, fmt.Errorf("failed to read block: %w", err)
+			// stream died mid-transfer — collect remaining expected CIDs
+			// so the caller can fall back to per-block
+			missing := make([]cid.Cid, 0, len(r.expected))
+			for c := range r.expected {
+				missing = append(missing, c)
+			}
+			return blockCount, byteCount, &IncompleteError{Missing: missing, Cause: err}
 		}
 
 		c := block.Cid()
@@ -108,10 +114,18 @@ func (r *ExtractingCarReader) ReadAndExtract(ctx context.Context, rdr io.Reader)
 
 type IncompleteError struct {
 	Missing []cid.Cid
+	Cause   error // non-nil if the stream failed mid-transfer
 }
 
 func (e *IncompleteError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("incomplete CAR: missing %d blocks: %v", len(e.Missing), e.Cause)
+	}
 	return fmt.Sprintf("incomplete CAR: missing %d blocks", len(e.Missing))
+}
+
+func (e *IncompleteError) Unwrap() error {
+	return e.Cause
 }
 
 func IsMissing(err error) ([]cid.Cid, bool) {
